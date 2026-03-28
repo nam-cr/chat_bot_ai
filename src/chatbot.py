@@ -1,7 +1,7 @@
 """
-Module chatbot chính — RAG pipeline + gọi Claude (Anthropic) qua REST API.
+Module chatbot chính — RAG pipeline + gọi LLM qua OpenAI-compatible API.
 Nhận câu hỏi → tìm chunks liên quan từ vector store → gửi context tới LLM → trả lời.
-Dùng requests gọi Claude Messages API (tương thích Python 3.8+).
+Dùng requests gọi OpenAI-compatible Chat Completions API (tương thích Python 3.8+).
 """
 
 import json
@@ -9,12 +9,9 @@ from typing import List, Dict, Optional
 
 import requests
 
-from src.config import CLAUDE_API_KEY, LLM_MODEL
+from src.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 from src.embeddings import similarity_search, get_vector_store
 
-
-# Claude Messages API endpoint
-CLAUDE_API_URL = "https://api.anthropic.com/v1/messages"
 
 # System prompt hướng dẫn LLM cách trả lời
 SYSTEM_PROMPT = """Bạn là trợ lý AI chuyên về hệ thống WiFi Marketing và Captive Portal của công ty LANCS Retails.
@@ -40,46 +37,51 @@ Hệ thống bao gồm:
 """
 
 
-def _call_claude_api(system_prompt: str, user_message: str) -> str:
+def _call_llm_api(system_prompt: str, user_message: str) -> str:
     """
-    Gọi Claude Messages API.
+    Gọi LLM qua OpenAI-compatible Chat Completions API.
 
     Args:
         system_prompt: System prompt
         user_message: Tin nhắn người dùng (đã bao gồm context)
 
     Returns:
-        str: Câu trả lời từ Claude
+        str: Câu trả lời từ LLM
     """
+    url = "{}/chat/completions".format(LLM_BASE_URL.rstrip("/"))
+
     headers = {
         "Content-Type": "application/json",
-        "x-api-key": CLAUDE_API_KEY,
-        "anthropic-version": "2023-06-01",
+        "Authorization": "Bearer {}".format(LLM_API_KEY),
     }
 
     payload = {
         "model": LLM_MODEL,
-        "max_tokens": 2048,
-        "system": system_prompt,
         "messages": [
-            {"role": "user", "content": user_message}
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
         ],
+        "max_tokens": 2048,
     }
 
-    response = requests.post(CLAUDE_API_URL, headers=headers, json=payload, timeout=60)
+    response = requests.post(url, headers=headers, json=payload, timeout=120)
 
     if response.status_code != 200:
-        error_data = response.json()
-        error_msg = error_data.get("error", {}).get("message", response.text)
-        raise Exception(f"Claude API error ({response.status_code}): {error_msg}")
+        try:
+            error_data = response.json()
+            error_msg = error_data.get("error", {}).get("message", response.text)
+        except Exception:
+            error_msg = response.text
+        raise Exception("LLM API error ({}): {}".format(response.status_code, error_msg))
 
     data = response.json()
-    # Trích xuất text từ response
-    content = data.get("content", [])
-    if not content:
-        raise Exception("Claude API trả về response rỗng")
 
-    return content[0].get("text", "")
+    # Trích xuất text từ OpenAI-compatible response
+    choices = data.get("choices", [])
+    if not choices:
+        raise Exception("LLM API trả về response rỗng")
+
+    return choices[0].get("message", {}).get("content", "")
 
 
 def _format_context(docs: List[Dict]) -> str:
@@ -88,31 +90,30 @@ def _format_context(docs: List[Dict]) -> str:
     for i, doc in enumerate(docs):
         source = doc.get("source", "unknown")
         context_parts.append(
-            f"--- Đoạn tài liệu {i+1} (nguồn: {source}) ---\n{doc['content']}"
+            "--- Đoạn tài liệu {} (nguồn: {}) ---\n{}".format(i + 1, source, doc["content"])
         )
     return "\n\n".join(context_parts)
 
 
 class ChatBot:
     """
-    Chatbot RAG sử dụng Claude (Anthropic).
+    Chatbot RAG sử dụng LLM qua OpenAI-compatible API.
     Tìm kiếm context từ tài liệu → gửi tới LLM → trả lời câu hỏi.
     """
 
     def __init__(self):
         """Khởi tạo chatbot: validate API key và load vector store."""
-        if not CLAUDE_API_KEY or CLAUDE_API_KEY == "your_claude_api_key_here":
+        if not LLM_API_KEY:
             raise ValueError(
-                "❌ Chưa cấu hình CLAUDE_API_KEY!\n"
-                "Hãy điền API key vào file .env\n"
-                "Lấy API key tại: https://console.anthropic.com/"
+                "❌ Chưa cấu hình LLM_API_KEY!\n"
+                "Hãy điền API key vào file .env"
             )
 
         # Pre-load vector store
         get_vector_store()
         self.conversation_history: List[Dict[str, str]] = []
 
-        print(f"🤖 Chatbot đã sẵn sàng! (model: {LLM_MODEL})")
+        print("🤖 Chatbot đã sẵn sàng! (model: {}, endpoint: {})".format(LLM_MODEL, LLM_BASE_URL))
 
     def ask(self, question: str, k: int = 5) -> str:
         """
@@ -136,20 +137,20 @@ class ChatBot:
             history_parts = []
             for entry in recent_history:
                 role = "Người dùng" if entry["role"] == "user" else "Trợ lý"
-                history_parts.append(f"{role}: {entry['content']}")
+                history_parts.append("{}: {}".format(role, entry["content"]))
             history_text = "\n\nLỊCH SỬ HỘI THOẠI GẦN ĐÂY:\n" + "\n".join(history_parts)
 
         user_message = (
-            f"TÀI LIỆU THAM KHẢO:\n{context}"
-            f"{history_text}\n\n"
-            f"CÂU HỎI CỦA NGƯỜI DÙNG:\n{question}"
-        )
+            "TÀI LIỆU THAM KHẢO:\n{}"
+            "{}\n\n"
+            "CÂU HỎI CỦA NGƯỜI DÙNG:\n{}"
+        ).format(context, history_text, question)
 
-        # Bước 3: Gọi Claude API
+        # Bước 3: Gọi LLM API
         try:
-            answer = _call_claude_api(SYSTEM_PROMPT, user_message)
+            answer = _call_llm_api(SYSTEM_PROMPT, user_message)
         except Exception as e:
-            answer = f"❌ Lỗi khi gọi LLM: {str(e)}"
+            answer = "❌ Lỗi khi gọi LLM: {}".format(str(e))
 
         # Bước 4: Lưu lịch sử hội thoại
         self.conversation_history.append({"role": "user", "content": question})
@@ -199,4 +200,4 @@ if __name__ == "__main__":
 
         print("🤖 Đang xử lý...\n")
         answer = bot.ask(question)
-        print(f"🤖 Trợ lý:\n{answer}\n")
+        print("🤖 Trợ lý:\n{}\n".format(answer))

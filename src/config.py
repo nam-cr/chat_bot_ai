@@ -14,7 +14,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
 
 # --- API Keys ---
-CLAUDE_API_KEY: str = os.getenv("CLAUDE_API_KEY", "")
+LLM_API_KEY: str = os.getenv("LLM_API_KEY", "")
+LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "https://ai.megallm.io/v1")
 
 # --- Đường dẫn ---
 DOCS_DIR: Path = BASE_DIR / "docs"
@@ -25,7 +26,7 @@ CHUNK_SIZE: int = int(os.getenv("CHUNK_SIZE", "800"))
 CHUNK_OVERLAP: int = int(os.getenv("CHUNK_OVERLAP", "200"))
 
 # --- Models ---
-LLM_MODEL: str = os.getenv("LLM_MODEL", "claude-sonnet-4-20250514")
+LLM_MODEL: str = os.getenv("LLM_MODEL", "openai-gpt-oss-120b")
 EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 
 # --- Flask ---
